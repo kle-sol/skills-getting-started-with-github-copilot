@@ -1,49 +1,62 @@
-import unittest
-from unittest.mock import patch
-
-from fastapi.testclient import TestClient
-
-from src.app import activities, app
+import pytest
 
 
-class UnregisterTests(unittest.TestCase):
-    def setUp(self):
-        self.activities_patch = patch.dict(
-            activities,
-            {
-                "Chess Club": {
-                    "participants": ["student+test@example.com", "other@example.com",
-                                     "student+test@example.com"]
-                }
-            },
-            clear=True,
-        )
-        self.activities_patch.start()
-        self.addCleanup(self.activities_patch.stop)
-        self.client = TestClient(app)
+def test_unregister_removes_all_matching_entries(client, activity_data):
+    # Arrange
+    participants = activity_data["Chess Club"]["participants"]
+    participants.append("student+test@example.com")
+    params = {"email": "student+test@example.com"}
 
-    def test_unregister_removes_all_matching_entries_and_allows_signup_again(self):
-        params = {"email": "student+test@example.com"}
-        response = self.client.delete("/activities/Chess%20Club/signup", params=params)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(activities["Chess Club"]["participants"], ["other@example.com"])
-        self.assertEqual(
-            self.client.post("/activities/Chess%20Club/signup", params=params).status_code,
-            200,
-        )
+    # Act
+    response = client.delete("/activities/Chess%20Club/signup", params=params)
+    activities_response = client.get("/activities")
 
-    def test_unknown_activity_or_participant_returns_404(self):
-        params = {"email": "missing@example.com"}
-        self.assertEqual(
-            self.client.delete("/activities/Missing/signup", params=params).status_code,
-            404,
-        )
-        self.assertEqual(
-            self.client.delete("/activities/Chess%20Club/signup", params=params).status_code,
-            404,
-        )
-        self.assertEqual(len(activities["Chess Club"]["participants"]), 3)
+    # Assert
+    assert response.status_code == 200
+    assert response.json() == {"message": "Unregistered student+test@example.com from Chess Club"}
+    assert activities_response.status_code == 200
+    assert activities_response.json()["Chess Club"]["participants"] == ["other@example.com"]
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_student_can_sign_up_again_after_unregistering(client):
+    # Arrange
+    params = {"email": "student+test@example.com"}
+    unregister_response = client.delete("/activities/Chess%20Club/signup", params=params)
+    assert unregister_response.status_code == 200
+
+    # Act
+    response = client.post("/activities/Chess%20Club/signup", params=params)
+    activities_response = client.get("/activities")
+
+    # Assert
+    assert response.status_code == 200
+    assert activities_response.status_code == 200
+    assert "student+test@example.com" in activities_response.json()["Chess Club"]["participants"]
+
+
+@pytest.mark.parametrize(
+    ("activity", "email", "detail"),
+    [
+        ("Missing", "student@example.com", "Activity not found"),
+        ("Chess%20Club", "missing@example.com", "Student not signed up for this activity"),
+    ],
+)
+def test_unregister_rejects_unknown_activity_or_participant(client, activity_data, activity, email, detail):
+    # Arrange
+    original_participants = list(activity_data["Chess Club"]["participants"])
+
+    # Act
+    response = client.delete(f"/activities/{activity}/signup", params={"email": email})
+
+    # Assert
+    assert response.status_code == 404
+    assert response.json()["detail"] == detail
+    assert activity_data["Chess Club"]["participants"] == original_participants
+
+
+def test_unregister_requires_email(client):
+    # Act
+    response = client.delete("/activities/Chess%20Club/signup")
+
+    # Assert
+    assert response.status_code == 422
